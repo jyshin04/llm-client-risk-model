@@ -199,10 +199,11 @@ function App() {
         body: formDataToSend,
       });
       let data;
+      let rawResponse = await response.text();
       try {
-        data = await response.json();
+        data = JSON.parse(rawResponse);
       } catch (jsonErr) {
-        throw new Error('Failed to parse server response. ' + (await response.text()));
+        throw new Error('Failed to parse server response. ' + rawResponse);
       }
       if (!response.ok) {
         throw new Error(data.error ? `${data.error}: ${data.details || ''} ${data.rawResponse || ''}` : 'Failed to analyze resume');
