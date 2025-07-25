@@ -193,7 +193,8 @@ function App() {
     formDataToSend.append('locationsWillingToWork', formData.locationsWillingToWork.join(','));
     formDataToSend.append('visaSponsorshipRequired', formData.visaSponsorshipRequired);
     try {
-      const response = await fetch('http://localhost:5050/api/analyze-resume', {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5050';
+      const response = await fetch(`${API_URL}/api/analyze-resume`, {
         method: 'POST',
         body: formDataToSend,
       });
