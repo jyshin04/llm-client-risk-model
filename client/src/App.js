@@ -200,9 +200,17 @@ function App() {
       });
       let data;
       let rawResponse = await response.text();
+      console.log('--- Raw server response ---');
+      console.log('Status:', response.status, response.statusText);
+      console.log('Headers:', Object.fromEntries(response.headers.entries()));
+      console.log('Raw body:', rawResponse);
+      console.log('--- End of raw response ---');
+      
       try {
         data = JSON.parse(rawResponse);
+        console.log('Parsed JSON data:', data);
       } catch (jsonErr) {
+        console.error('Failed to parse JSON:', jsonErr);
         throw new Error('Failed to parse server response. ' + rawResponse);
       }
       if (!response.ok) {
