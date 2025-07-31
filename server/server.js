@@ -3,7 +3,114 @@ const cors = require('cors');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const OpenAI = require('openai');
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const { promisify } = require('util');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
+
+const execAsync = promisify(exec);
+
+// Check if text extraction is insufficient (less than 100 characters or mostly non-text)
+function isTextInsufficient(text) {
+  if (!text || typeof text !== 'string') return true;
+  
+  // Check if text is too short
+  if (text.trim().length < 100) return true;
+  
+  // Check if text has very few spaces (likely not proper text extraction)
+  const spaceRatio = (text.split(' ').length - 1) / text.length;
+  if (spaceRatio < 0.01) return true;
+  
+  return false;
+}
+
+// Function to perform OCR on PDF using Python's pytesseract and pdf2image
+async function extractTextWithOCR(pdfBuffer) {
+  const tempDir = path.join(__dirname, 'temp');
+  const tempId = uuidv4();
+  const tempPdfPath = path.join(tempDir, `${tempId}.pdf`);
+  
+  try {
+    // Create temp directory if it doesn't exist
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    // Write PDF buffer to temp file
+    fs.writeFileSync(tempPdfPath, pdfBuffer);
+    
+    // Python script to perform OCR
+    const pythonScript = `
+import sys
+import os
+import pytesseract
+from pdf2image import convert_from_path
+
+def ocr_pdf(pdf_path):
+    # Convert PDF to images
+    images = convert_from_path(pdf_path, dpi=300)
+    
+    # Extract text from each image
+    text = ''
+    for i, image in enumerate(images):
+        text += pytesseract.image_to_string(image) + '\n\n'
+    # Clean up temporary image files
+    for image in images:
+        if hasattr(image, 'filename') and os.path.exists(image.filename):
+            os.remove(image.filename)
+    
+    return text.strip()
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print("Usage: python ocr_script.py <pdf_path>")
+        sys.exit(1)
+    
+    pdf_path = sys.argv[1]
+    try:
+        result = ocr_pdf(pdf_path)
+        print(result)
+    except Exception as e:
+        print(f"OCR_ERROR: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    `;
+    
+    // Write Python script to temp file
+    const pythonScriptPath = path.join(tempDir, 'ocr_script.py');
+    fs.writeFileSync(pythonScriptPath, pythonScript);
+    
+    // Execute Python script
+    const { stdout, stderr } = await execAsync(`python3 ${pythonScriptPath} "${tempPdfPath}"`);
+    
+    if (stderr) {
+      console.error('OCR stderr:', stderr);
+    }
+    
+    // Clean up temp files
+    fs.unlinkSync(tempPdfPath);
+    fs.unlinkSync(pythonScriptPath);
+    
+    if (stdout.startsWith('OCR_ERROR:')) {
+      throw new Error(stdout.substring('OCR_ERROR:'.length).trim());
+    }
+    
+    return stdout;
+  } catch (error) {
+    console.error('OCR processing failed:', error);
+    throw new Error(`OCR processing failed: ${error.message}`);
+  } finally {
+    // Clean up temp directory if empty
+    try {
+      if (fs.existsSync(tempDir) && fs.readdirSync(tempDir).length === 0) {
+        fs.rmdirSync(tempDir);
+      }
+    } catch (err) {
+      console.error('Error cleaning up temp directory:', err);
+    }
+  }
+}
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -36,7 +143,7 @@ const openai = new OpenAI({
 async function extractField(openai, field, resumeText) {
   const prompts = {
     full_name: `Return the candidate's full name from the following resume text. Return only the name or null if not found.\n\nResume:\n${resumeText}`,
-    employment_status: `Is the candidate currently employed? If the most recent position's end date is "present" (e.g. 2022-Present), the person is "Employed". Otherwise, "Unemployed". Return only "Employed", "Unemployed", or null.\n\nResume:\n${resumeText}`,
+    employment_status: `If the candidate's most recent position's end date is "present" or "current" (e.g. 2022-Present), return "Employed". If it is a date (e.g. 2022-2025), return "Unemployed". Return only "Employed", "Unemployed", or null.\n\nResume:\n${resumeText}`,
     highest_education_level: `Return the highest education level (None, Associate, Bachelor, Master, PhD) from the following resume text. Return only the value or null.\n\nResume:\n${resumeText}`,
     current_job_title: `Return the most recent job title from the following resume text. Return only the title or null.\n\nResume:\n${resumeText}`,
     years_of_experience: `What is the candidate's total years of professional experience? If possible, extract directly from the resume summary. Otherwise, calculate as the number of years between the earliest listed job's start date and the most recent job's end date or "present".Return only a number or null.\n\nResume:\n${resumeText}`,
@@ -58,6 +165,11 @@ async function extractField(openai, field, resumeText) {
 
 // Main endpoint for resume analysis
 app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
+  // Debug: Log incoming request fields and file
+  console.log('--- Incoming Request to /api/analyze-resume ---');
+  console.log('req.body:', req.body);
+  console.log('req.file:', req.file);
+  console.log('req.headers:', req.headers);
   try {
     const { desiredCompensation, locationsWillingToWork, visaSponsorshipRequired } = req.body;
     if (!req.file) {
@@ -65,8 +177,34 @@ app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
     }
     // Parse PDF to text
     const pdfBuffer = req.file.buffer;
-    const pdfData = await pdfParse(pdfBuffer);
-    const resumeText = pdfData.text;
+    let resumeText = '';
+    let usedOCR = false;
+    
+    try {
+      // First try standard text extraction
+      const pdfData = await pdfParse(pdfBuffer);
+      resumeText = pdfData.text;
+      
+      // Check if we need to use OCR fallback
+      if (isTextInsufficient(resumeText)) {
+        console.log('Standard text extraction insufficient, falling back to OCR...');
+        try {
+          const ocrText = await extractTextWithOCR(pdfBuffer);
+          if (ocrText && !isTextInsufficient(ocrText)) {
+            resumeText = ocrText;
+            usedOCR = true;
+            console.log('Successfully extracted text using OCR');
+          } else {
+            console.warn('OCR extraction also resulted in insufficient text');
+          }
+        } catch (ocrError) {
+          console.error('OCR fallback failed, using original text:', ocrError);
+        }
+      }
+    } catch (parseError) {
+      console.error('Error parsing PDF:', parseError);
+      return res.status(400).json({ error: 'Failed to parse PDF file' });
+    }
 
     // --- Extraction Phase ---
     const extractionFields = [
@@ -324,7 +462,7 @@ app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
       summary.explanation = "Failed to generate summary: " + (e.message || "unknown error");
     }
 
-    res.json({
+    const responsePayload = {
       extracted_fields: {
         ...extracted,
         current_company: currentCompany,
@@ -336,10 +474,14 @@ app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
       total_score: totalScore,
       missing_fields: missingFields,
       summary
-    });
+    };
+    console.log('Sending response to frontend:', JSON.stringify(responsePayload, null, 2));
+    res.json(responsePayload);
   } catch (error) {
     console.error('Error processing resume:', error);
-    res.status(500).json({ error: 'Failed to process resume', details: error.message });
+    const errorPayload = { error: 'Failed to process resume', details: error.message };
+    console.log('Sending error response to frontend:', JSON.stringify(errorPayload, null, 2));
+    res.status(500).json(errorPayload);
   }
 });
 // Health check endpoint

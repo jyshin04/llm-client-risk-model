@@ -38,8 +38,11 @@ import {
 } from '@mui/icons-material';
 import './App.css';
 import interroomLogo from './interroom-logo.png';
+// Import jsPDF
 import { jsPDF } from 'jspdf';
-import { autoTable } from 'jspdf-autotable';
+
+// We'll create a simple table without jspdf-autotable
+// since there seems to be an issue with the plugin
 
 const steps = ['Upload Resume', 'Additional Info'];
 const locationSuggestions = [
@@ -228,68 +231,242 @@ function App() {
   };
 
   const handleExportPDF = () => {
-    const doc = new jsPDF();
-    let y = 16;
-    // Add logo
-    const img = new Image();
-    img.src = interroomLogo;
-    doc.addImage(img, 'PNG', 10, y, 28, 28);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text('AI Resume Screener', 45, y + 12);
-    y += 32;
-    // Rating and score
-    doc.setFontSize(16);
-    doc.setTextColor(91, 33, 182);
-    doc.text(`Result: ${result.recommendation}`, 10, y);
-    doc.setTextColor(0, 0, 0);
-    doc.text(`Total Score: ${Math.max(0, Math.min(80, result.total_score))}/80`, 10, y + 10);
-    y += 20;
-    // Strengths and Concerns
-    doc.setFontSize(13);
-    doc.setTextColor(91, 33, 182);
-    doc.text('Strengths:', 10, y);
-    doc.setTextColor(107, 114, 128);
-    doc.text('Areas of Concern:', 110, y);
-    y += 6;
-    doc.setFontSize(11);
-    doc.setTextColor(91, 33, 182);
-    result.pros.forEach((pro, i) => {
-      doc.text(`- ${pro}`, 10, y + i * 6);
-    });
-    doc.setTextColor(107, 114, 128);
-    result.cons.forEach((con, i) => {
-      doc.text(`- ${con}`, 110, y + i * 6);
-    });
-    y += Math.max(result.pros.length, result.cons.length) * 6 + 8;
-    // Feature table
-    doc.setTextColor(0, 0, 0);
-    doc.setFontSize(13);
-    doc.text('Extracted Features & Scores', 10, y);
-    y += 4;
-    autoTable(doc, {
-      startY: y,
-      head: [['Feature', 'Extracted Value', 'Score']],
-      body: [
-        ['Employment Status', result.extracted_fields.employment_status || '—', result.scoring.employment_status_score],
-        ['Highest Education Level', result.extracted_fields.highest_education_level || '—', result.scoring.highest_education_level_score],
+    try {
+      if (!result) {
+        console.error('No result data available for PDF export');
+        return;
+      }
 
-        ['Current Job Title', result.extracted_fields.current_job_title || '—', result.scoring.current_job_title_score],
-        ['Years of Experience', result.extracted_fields.years_of_experience || '—', result.scoring.years_of_experience_score],
-        ['Current Company', result.extracted_fields.current_company && typeof result.extracted_fields.current_company === 'object' ? `${result.extracted_fields.current_company.name} (${result.extracted_fields.current_company.score}/6)` : (result.extracted_fields.current_company || '—'), result.scoring.current_company_score],
-        ['Previous Companies', Array.isArray(result.extracted_fields.previous_companies) ? result.extracted_fields.previous_companies.map(c => `${c.name} (${c.score}/4)`).join(', ') : (result.extracted_fields.previous_companies || '—'), result.scoring.previous_companies_score],
-        ['Visa Sponsorship Required', result.extracted_fields.visa_sponsorship_required || '—', result.scoring.visa_sponsorship_score],
-        ['Desired Compensation', result.extracted_fields.desired_compensation !== undefined && result.extracted_fields.desired_compensation !== null ? `$${result.extracted_fields.desired_compensation.toLocaleString()}` : '—', result.scoring.desired_compensation_score],
-        ['Current Location', result.extracted_fields.current_location && typeof result.extracted_fields.current_location === 'object' ? `${result.extracted_fields.current_location.name} (${result.extracted_fields.current_location.score}/5)` : (result.extracted_fields.current_location || '—'), result.scoring.current_location_score],
-        ['Willing to Work In', Array.isArray(result.extracted_fields.willing_to_work_in) ? (Array.isArray(result.extracted_fields.willing_to_work_in) ? result.extracted_fields.willing_to_work_in : []).map(loc => `${loc.name} (${loc.score}/5)`).join(', ') : (result.extracted_fields.willing_to_work_in || '—'), result.scoring.willing_to_work_in_score],
-      ],
-      styles: { font: 'helvetica', fontSize: 10, cellPadding: 2 },
-      headStyles: { fillColor: [91, 33, 182], textColor: 255, fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [245, 245, 255] },
-      margin: { left: 10, right: 10 },
-      tableWidth: 190,
-    });
-    doc.save('resume-analysis.pdf');
+      const doc = new jsPDF();
+      let y = 16;
+      
+      // Add logo
+      try {
+        const img = new Image();
+        img.src = interroomLogo;
+        doc.addImage(img, 'PNG', 10, y, 28, 28);
+      } catch (e) {
+        console.warn('Failed to add logo to PDF:', e);
+      }
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(20);
+      doc.text('AI Resume Screener', 45, y + 12);
+      y += 32;
+      
+      // Safely access result properties with fallbacks
+      const extractedFields = result.extracted_fields || {};
+      const scoring = result.scoring || {};
+      
+      // Add more vertical spacing after logo
+      y += 15;
+      
+      // Add applicant name with nice styling
+      const fullName = result.extracted_fields?.full_name || 'Applicant';
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(20);
+      doc.setTextColor(91, 33, 182);
+      doc.text(fullName, 10, y);
+      y += 12;
+      
+      // Add a subtle divider line
+      doc.setDrawColor(200, 200, 200);
+      doc.line(10, y, 200, y);
+      y += 15;
+      
+      // Add result description with conditional message
+      const score = result.total_score || 0;
+      const threshold = 65;
+      const difference = score - threshold;
+      let resultText = '';
+      
+      if (difference > 0) {
+        resultText = `This client scored ${difference} point${difference === 1 ? '' : 's'} above the threshold (${threshold}) and is recommended for the bundle.`;
+      } else if (difference < 0) {
+        resultText = `This client scored ${Math.abs(difference)} point${difference === -1 ? '' : 's'} below the threshold (${threshold}) and is not recommended for the bundle.`;
+      } else {
+        resultText = `This client scored exactly at the threshold (${threshold}).`;
+      }
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(12);
+      doc.setTextColor(0, 0, 0);
+      
+      // Split text into multiple lines if needed
+      const splitText = doc.splitTextToSize(resultText, 190);
+      doc.text(splitText, 10, y);
+      y += splitText.length * 6 + 15;
+      
+      // Add total score with better styling
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(91, 33, 182);
+      doc.text('Total Score', 10, y);
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(14);
+      doc.text(`${score}/80`, 100, y);
+      y += 25;
+      
+      // Add section header with more spacing
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(91, 33, 182);
+      doc.text('Candidate Details', 10, y);
+      y += 10;
+      
+      // Add a subtle divider line
+      doc.setDrawColor(200, 200, 200);
+      doc.line(10, y, 200, y);
+      y += 15;
+      
+      // Helper function to safely format company data
+      const formatCompany = (company) => {
+        if (!company) return '—';
+        if (typeof company === 'object' && company !== null) {
+          return `${company.name || 'N/A'} (${company.score || 'N/A'}/6)`;
+        }
+        return String(company);
+      };
+      
+      // Helper function to safely format location data
+      const formatLocation = (location) => {
+        if (!location) return '—';
+        if (Array.isArray(location)) {
+          return location.map(loc => 
+            loc && typeof loc === 'object' 
+              ? `${loc.name || 'N/A'} (${loc.score || 'N/A'}/5)`
+              : String(loc)
+          ).filter(Boolean).join(', ') || '—';
+        }
+        if (typeof location === 'object') {
+          return `${location.name || 'N/A'} (${location.score || 'N/A'}/5)`;
+        }
+        return String(location);
+      };
+      
+      // Helper function to safely format compensation
+      const formatCompensation = (amount) => {
+        if (amount === undefined || amount === null) return '—';
+        try {
+          return `$${parseInt(amount).toLocaleString()}`;
+        } catch (e) {
+          return String(amount);
+        }
+      };
+      
+      // Create table data with safe property access
+      const tableData = [
+        ['Employment Status', extractedFields.employment_status || '—', scoring.employment_status_score || '—'],
+        ['Highest Education Level', extractedFields.highest_education_level || '—', scoring.highest_education_level_score || '—'],
+        ['Current Job Title', extractedFields.current_job_title || '—', scoring.current_job_title_score || '—'],
+        ['Years of Experience', extractedFields.years_of_experience || '—', scoring.years_of_experience_score || '—'],
+        ['Current Company', formatCompany(extractedFields.current_company), scoring.current_company_score || '—'],
+        ['Previous Companies', formatLocation(extractedFields.previous_companies), scoring.previous_companies_score || '—'],
+        ['Visa Sponsorship Required', extractedFields.visa_sponsorship_required || '—', scoring.visa_sponsorship_score || '—'],
+        ['Desired Compensation', formatCompensation(extractedFields.desired_compensation), scoring.desired_compensation_score || '—'],
+        ['Current Location', formatLocation(extractedFields.current_location), scoring.current_location_score || '—'],
+        ['Willing to Work In', formatLocation(extractedFields.willing_to_work_in), scoring.willing_to_work_in_score || '—'],
+      ];
+      
+      // Draw table header with better styling
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(255, 255, 255);
+      doc.setFillColor(70, 30, 150);  // Slightly darker purple for better contrast
+      
+      // Draw header with padding and rounded corners effect
+      const headerHeight = 12;
+      doc.roundedRect(10, y - 2, 190, headerHeight, 2, 2, 'F');
+      
+      // Add text with better spacing
+      doc.text('FEATURE', 15, y + 7);
+      doc.text('EXTRACTED VALUE', 80, y + 7);
+      doc.text('SCORE', 180, y + 7, { align: 'right' });
+      
+      // Add subtle shadow/divider
+      doc.setFillColor(220, 220, 220);
+      doc.rect(10, y + headerHeight - 1, 190, 1, 'F');
+      
+      y += headerHeight + 5;  // Add more space after header
+      
+      // Draw table rows with better styling
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      
+      const rowHeight = 12;  // Slightly taller rows for better readability
+      const rowPadding = 6;  // Padding on top of text
+      const col1X = 15;
+      const col2X = 80;
+      const col3X = 170;
+      const maxWidth = 180;
+      
+      tableData.forEach((row, index) => {
+        // Check if we need a new page (leave room for at least 2 rows)
+        if (y > 250) {
+          doc.addPage();
+          y = 30;
+        }
+        
+        // Calculate row height based on content (in case of text wrapping)
+        const textLines = doc.splitTextToSize(String(row[1] || '—'), maxWidth - col2X + col1X);
+        const rowContentHeight = Math.max(rowHeight, textLines.length * 5 + 2);
+        
+        // Alternate row colors with better contrast
+        if (index % 2 === 0) {
+          doc.setFillColor(250, 250, 255);  // Very light blue
+        } else {
+          doc.setFillColor(255, 255, 255);  // White
+        }
+        
+        // Draw row background
+        doc.rect(10, y - rowPadding/2, 190, rowContentHeight + rowPadding/2, 'F');
+        
+        // Draw row content with better typography
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(70, 30, 150);  // Dark purple for labels
+        doc.text(row[0], col1X, y + 2);
+        
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(60, 60, 60);  // Dark gray for values
+        
+        // Handle multi-line text for the value column
+        doc.text(textLines, col2X, y + 2);
+        
+        // Draw score with a subtle background
+        doc.setFillColor(245, 245, 245);
+        doc.roundedRect(col3X - 15, y - 2, 30, rowContentHeight - 2, 1.5, 1.5, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(70, 30, 150);
+        doc.text(String(row[2] || '—'), col3X, y + 2, { align: 'center' });
+        
+        // Add subtle bottom border
+        doc.setDrawColor(230, 230, 230);
+        doc.line(10, y + rowContentHeight + rowPadding/2 - 1, 200, y + rowContentHeight + rowPadding/2 - 1);
+        
+        y += rowContentHeight + rowPadding/2;
+      });
+      
+      // Add page numbers
+      const pageCount = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.text(
+          `Page ${i} of ${pageCount}`,
+          doc.internal.pageSize.width - 20,
+          doc.internal.pageSize.height - 10
+        );
+      }
+      
+      // Save the PDF
+      doc.save(`resume-analysis-${new Date().toISOString().split('T')[0]}.pdf`);
+      
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF. Please try again.');
+    }
   };
 
   const getScoreColor = (score) => {
